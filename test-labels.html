@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trolley Test Labels</title>
+<!-- Demo trolley labels to scan with the phone camera while the trolleys have no real labels.
+     Values match seed() in js/app.js: QR = Bundle Nexus key (BNX-...), barcode = SPL####. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{--blue:#0092D6;--bg:#FAFAF9;--surface:#fff;--line:#E5E5E5;--text:#111;--muted:#777}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:Roboto,Arial,sans-serif}
+  header{padding:28px 32px 8px;max-width:1200px;margin:0 auto}
+  h1{margin:0;font-weight:400;font-size:28px}
+  header p{margin:10px 0 0;color:var(--muted);line-height:1.5;max-width:80ch}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:18px;padding:22px 32px 40px;max-width:1200px;margin:0 auto}
+  .label{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px;break-inside:avoid}
+  .top{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+  .id{font:500 24px/1 Roboto,Arial,sans-serif}
+  .state{font-size:14px;color:var(--muted)}
+  .codes{display:flex;gap:16px;align-items:center;margin-top:14px}
+  .qr{flex:none;padding:8px;background:#fff;border:1px solid var(--line);border-radius:8px}
+  .qr img,.qr canvas{display:block}
+  .kv{font:400 13px/1.5 'Roboto Mono',Consolas,monospace;color:#333}
+  .kv b{display:block;font:500 11px/1.6 Roboto,Arial,sans-serif;letter-spacing:.6px;text-transform:uppercase;color:var(--muted)}
+  .bar{margin-top:12px;text-align:center}
+  .bar svg{max-width:100%;height:auto}
+  @media print{body{background:#fff}header p{display:none}.label{border-color:#bbb}}
+  @media (max-width:600px){header,.grid{padding-left:16px;padding-right:16px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Trolley test labels</h1>
+  <p>Open the app on your phone, go to a station (Hospital ward, Soil sort, Production or Packing), tap <b>Scan with camera</b> and point it at a QR code or barcode below. Either one works. Show this page on a PC screen or print it.</p>
+</header>
+<main class="grid" id="grid"></main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.5/JsBarcode.all.min.js"></script>
+<script>
+var TROLLEYS=[
+  ["T-1042","E280 6894 0000 4042 1A7C","Available"],
+  ["T-1077","E280 6894 0000 4077 2B11","Faulty"],
+  ["T-1103","E280 6894 0000 4103 9C02","In repair"],
+  ["T-1121","E280 6894 0000 4121 0D3E","Available"],
+  ["T-1135","E280 6894 0000 4135 7F48","Available"],
+  ["T-1150","E280 6894 0000 4150 AA90","Retired"],
+  ["T-1162","E280 6894 0000 4162 5E21","Available"]
+];
+function qrFor(epc){return "BNX-"+epc.replace(/ /g,"").slice(-8);}   /* same rule as app.js */
+var grid=document.getElementById("grid");
+TROLLEYS.forEach(function(t){
+  var id=t[0], qr=qrFor(t[1]), bc="SPL"+id.slice(2);
+  var el=document.createElement("section"); el.className="label";
+  el.innerHTML='<div class="top"><div class="id">'+id+'</div><div class="state">Demo state: '+t[2]+'</div></div>'+
+    '<div class="codes"><div class="qr"></div><div class="kv"><b>QR code</b>'+qr+'<b style="margin-top:6px">EPC (RFID)</b>'+t[1]+'</div></div>'+
+    '<div class="bar"><svg></svg></div>';
+  grid.appendChild(el);
+  new QRCode(el.querySelector(".qr"),{text:qr,width:132,height:132,correctLevel:QRCode.CorrectLevel.M});
+  JsBarcode(el.querySelector(".bar svg"),bc,{format:"CODE128",width:2,height:60,fontSize:16,margin:6});
+});
+</script>
+</body>
+</html>

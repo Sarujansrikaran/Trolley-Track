@@ -251,6 +251,7 @@ function render(){
   var u=U();
   if(!u){applyMode(false);patch(app,loginScreen());renderOverlay();save();return;}
   if(!allowed(S.page)) S.page=u.pages[0];
+  if(UI.cam&&UI.cam.page!==S.page) stopCam();
   var p=P();
   var unseen=S.alerts.filter(function(a){return !a.seen;}).length;
   var jobs=Object.keys(S.trolleys).filter(function(k){var t=T(k);return t.state==="Faulty"||t.state==="In repair"||t.flag;}).length;
@@ -327,6 +328,107 @@ function portalRead(id,portal){
 }
 function tile(label,n,kind,sub){return '<div class="stat '+(kind==="info"?"":kind)+'"><div class="overline">'+esc(label)+'</div><div class="stat-value"><span class="dot '+kind+'"></span>'+n+'</div><div class="stat-sub">'+esc(sub)+'</div></div>';}
 
+/* ================= camera scanner =================
+   Uses the phone's back camera (needs an https link). Reads QR codes and barcodes:
+   the browser's own BarcodeDetector where it exists (Android Chrome), otherwise the
+   ZXing library, loaded on first use (iPhone, desktop). A recognised label goes
+   through the same Bundle Nexus lookup as tapping a trolley in the demo list. */
+var ZXING_URL="https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js";
+var CAM={stream:null,timer:null,busy:false,last:null};
+function loadScript(src){return new Promise(function(ok,bad){var el=document.createElement("script");el.src=src;el.onload=ok;el.onerror=function(){bad(new Error("Couldn’t load the barcode reader. Check the internet connection."));};document.head.appendChild(el);});}
+function stopCam(){
+  if(CAM.timer){clearInterval(CAM.timer);CAM.timer=null;}
+  if(CAM.stream){CAM.stream.getTracks().forEach(function(t){t.stop();});CAM.stream=null;}
+  CAM.busy=false;CAM.last=null;UI.cam=null;
+}
+/* returns async function(video) -> decoded text or null */
+function makeDecoder(){
+  var want=["qr_code","code_128","code_39","ean_13"];
+  var native=("BarcodeDetector" in window)?BarcodeDetector.getSupportedFormats().then(function(sup){
+      var f=want.filter(function(x){return sup.indexOf(x)>-1;});
+      if(f.indexOf("qr_code")<0) return null;
+      var d=new BarcodeDetector({formats:f});
+      return function(v){return d.detect(v).then(function(r){return r.length?r[0].rawValue:null;});};
+    }).catch(function(){return null;}):Promise.resolve(null);
+  return native.then(function(fn){
+    if(fn) return fn;
+    return (window.ZXing?Promise.resolve():loadScript(ZXING_URL)).then(function(){
+      var Z=window.ZXing, hints=new Map(), reader=new Z.MultiFormatReader();
+      hints.set(Z.DecodeHintType.POSSIBLE_FORMATS,[Z.BarcodeFormat.QR_CODE,Z.BarcodeFormat.CODE_128,Z.BarcodeFormat.CODE_39,Z.BarcodeFormat.EAN_13]);
+      hints.set(Z.DecodeHintType.TRY_HARDER,true);
+      reader.setHints(hints);
+      var cv=document.createElement("canvas"), cx=cv.getContext("2d",{willReadFrequently:true});
+      return function(v){
+        var w=v.videoWidth,h=v.videoHeight; if(!w) return Promise.resolve(null);
+        var k=Math.min(1,800/Math.max(w,h)); cv.width=Math.round(w*k); cv.height=Math.round(h*k);
+        cx.drawImage(v,0,0,cv.width,cv.height);
+        /* own greyscale: ZXing's HTMLCanvasElementLuminanceSource inverts every other frame,
+           which together with TRY_HARDER never decodes */
+        var px=cx.getImageData(0,0,cv.width,cv.height).data, lum=new Uint8ClampedArray(cv.width*cv.height);
+        for(var i=0,j=0;j<lum.length;i+=4,j++) lum[j]=(px[i]*77+px[i+1]*150+px[i+2]*29)>>8;
+        try{return Promise.resolve(reader.decodeWithState(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.RGBLuminanceSource(lum,cv.width,cv.height)))).getText());}
+        catch(e){return Promise.resolve(null);}
+      };
+    });
+  });
+}
+function camError(e){
+  var n=e&&e.name;
+  return n==="NotAllowedError"?"Camera access was blocked. Allow the camera for this site in your browser settings, then try again.":
+         n==="NotFoundError"?"No camera was found on this device.":
+         n==="NotReadableError"?"The camera is being used by another app. Close it and try again.":
+         (e&&e.message)||"Couldn’t start the camera.";
+}
+function startCam(){
+  var pg=S.page;
+  if(!window.isSecureContext){UI.cam={page:pg,status:"error",msg:"The camera only works on a secure https link."};return render();}
+  if(!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)){UI.cam={page:pg,status:"error",msg:"This browser can’t use the camera."};return render();}
+  UI.cam={page:pg,status:"starting"}; render();
+  navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}}}).then(function(stream){
+    if(!UI.cam||UI.cam.page!==S.page){stream.getTracks().forEach(function(t){t.stop();});return;}   /* left the screen meanwhile */
+    CAM.stream=stream; UI.cam.status="live"; render();
+    var v=document.getElementById("vfVideo"); v.srcObject=stream; var p=v.play(); if(p&&p.catch)p.catch(function(){});
+    return makeDecoder().then(function(decode){
+      if(!CAM.stream) return;
+      CAM.timer=setInterval(function(){
+        if(CAM.busy||!CAM.stream) return; CAM.busy=true;
+        decode(v).then(function(txt){CAM.busy=false; if(txt) onCode(String(txt).trim());},function(){CAM.busy=false;});
+      },200);
+    });
+  }).catch(function(e){stopCam(); UI.cam={page:pg,status:"error",msg:camError(e)}; render();});
+}
+/* a code was read: QR key, barcode or asset number */
+function onCode(txt){
+  var id=Object.keys(S.trolleys).filter(function(k){var t=T(k);return t.qr===txt||t.barcode===txt||k===txt;})[0];
+  if(!id){ if(CAM.last!==txt){CAM.last=txt; toast("warn","That isn’t a trolley label: "+txt); renderOverlay();} return; }
+  if(navigator.vibrate) navigator.vibrate(60);
+  var how=T(id).qr===txt?"QR code":"barcode";
+  stopCam(); lookupTrolley(id,"Camera ("+how+")");
+}
+/* label -> Bundle Nexus -> asset no. + EPC, then show the trolley */
+function lookupTrolley(id,how){
+  var pg=S.page, qr=T(id).qr;
+  UI.lookup={page:pg,qr:qr}; S.current[pg]=null; render();
+  bundleLookup(qr,function(rid,cached){
+    UI.lookup=null;
+    if(!rid) toast("fault","Bundle Nexus doesn’t recognise "+qr+". Try scanning again.");
+    else{S.current[pg]=rid; S.qrRead[pg]={id:rid,cached:cached}; S.lastRead=how+(cached?" (cached Bundle data)":" via Bundle Nexus");}
+    render();
+  });
+}
+function viewfinder(){
+  var cam=UI.cam&&UI.cam.page===S.page?UI.cam:null;
+  var corners='<i></i><i></i><i></i><i></i><div class="vf-line"></div>';
+  if(cam&&cam.status!=="error")
+    return '<div class="viewfinder live only-phone" data-key="vf-live"><video id="vfVideo" class="vf-video" playsinline muted autoplay></video>'+
+      '<div class="vf-frame" aria-hidden="true">'+corners+'</div>'+
+      '<div class="vf-text">'+(cam.status==="starting"?"Starting the camera…":"Point at the QR code or barcode")+'</div>'+
+      '<button class="vf-stop" data-act="cam-stop" aria-label="Stop the camera">'+ic("x")+'</button></div>';
+  return '<div class="viewfinder only-phone" data-key="vf-idle"><div class="vf-frame" aria-hidden="true">'+corners+ic("qr",1.4)+'</div>'+
+    '<div class="vf-text">'+(cam?esc(cam.msg):"Scan the trolley’s QR code or barcode")+'</div>'+
+    '<button class="btn btn-primary vf-btn" data-act="cam-start">'+ic("camera")+(cam?"Try again":"Scan with camera")+'</button></div>';
+}
+
 /* scan panel shared by stations: one camera scanner that reads the QR code or the barcode */
 function scanPanel(opts){
   opts=opts||{};
@@ -334,14 +436,14 @@ function scanPanel(opts){
   var sel=S.current[S.page];
   return '<section class="panel pick scan"><div class="panel-head"><div class="panel-title">'+esc(opts.title||"Scan the QR code or barcode")+'</div><div class="panel-desc">Tap a trolley to simulate a camera scan</div></div>'+
    /* phone only: camera viewfinder above the demo list */
-   '<div class="viewfinder only-phone" aria-hidden="true"><div class="vf-frame"><i></i><i></i><i></i><i></i><div class="vf-line"></div>'+ic("qr",1.4)+'</div><div class="vf-text">Point the camera at the QR code or barcode</div></div>'+
-   '<div class="vf-demo only-phone">Demo: tap a trolley to scan its label</div>'+
+   viewfinder()+
+   '<div class="vf-demo only-phone">Or tap a demo trolley</div>'+
    '<div class="panel-body"><div class="rows">'+ids.map(function(id){var t=T(id);
      /* the label only carries the Bundle key; the asset no. and EPC come back from Bundle Nexus */
      var pending=UI.lookup&&UI.lookup.page===S.page&&UI.lookup.qr===t.qr;
      return '<button class="row" data-act="scan" data-id="'+id+'" aria-current="'+(sel===id)+'"'+(UI.lookup?' disabled':'')+'><span class="sq">'+ic("qr")+'</span><span class="grow"><div class="id">'+esc(id)+'</div><div class="meta">'+esc(t.qr)+' · '+esc(t.barcode)+'</div></span>'+
        (pending?'<span class="tag warn">Looking up…</span>':sel===id?'<span class="tag">Read</span>':'')+'</button>';}).join("")+'</div></div>'+
-   '<div class="panel-foot">'+ic("info")+'<span>The camera reads the QR code or the barcode. Bundle Nexus returns the trolley’s asset number and EPC, and every report is stored against that EPC. RFID itself is read by the fixed portals at the laundry, not by phones.</span></div></section>';
+   '<div class="panel-foot">'+ic("info")+'<span>No labels yet? Open <b>test-labels.html</b> on a PC and scan those. The camera reads the QR code or the barcode. Bundle Nexus returns the trolley’s asset number and EPC, and every report is stored against that EPC. RFID itself is read by the fixed portals at the laundry, not by phones.</span></div></section>';
 }
 /* What Bundle Nexus returned for the last QR read on this page */
 function qrNote(t){
@@ -612,6 +714,7 @@ var PUBLIC=["login","key","close","theme","net","reset","phone"];   /* actions a
 function act(a,el){
   readForm();
   if(!U()&&PUBLIC.indexOf(a)<0) return render();
+  if(UI.cam&&["go","logout","phone","scan","report-any","account","more","reset"].indexOf(a)>-1) stopCam();
   var t=cur();
   switch(a){
   case "login":
@@ -636,24 +739,15 @@ function act(a,el){
     if(UI.pin.length===4){ if(UI.pin===PIN){UI.dialog=null;var nx=UI.pinNext;UI.pinNext=null;UI.pin="";nx&&nx();} else {UI.pinErr="That PIN isn’t right. Try again.";UI.pin="";} }
     break;
   case "close": UI.dialog=null; UI.form={}; UI.pinNext=null; break;
+  case "cam-start": startCam(); return;
+  case "cam-stop": stopCam(); break;
   case "portal-in":
     var wasBad=portalRead(el.dataset.id,"inbound");
     toast(wasBad?"warn":"ok",el.dataset.id+" read at the inbound portal."+(wasBad?" It’s faulty, so engineering has been alerted.":""));
     break;
   case "scan":
     if(UI.lookup) break;
-    if(S.page!=="eng"){
-      /* QR label -> Bundle Nexus lookup -> asset no. + RFID, then show the trolley */
-      var pg=S.page, qr=T(el.dataset.id).qr;
-      UI.lookup={page:pg,qr:qr}; S.current[pg]=null;
-      bundleLookup(qr,function(id,cached){
-        UI.lookup=null;
-        if(!id){toast("fault","Bundle Nexus doesn’t recognise "+qr+". Try scanning again.");}
-        else{S.current[pg]=id; S.qrRead[pg]={id:id,cached:cached}; S.lastRead=cached?"Phone scan (cached Bundle data)":"Phone scan via Bundle Nexus";}
-        render();
-      });
-      break;
-    }
+    if(S.page!=="eng"){ lookupTrolley(el.dataset.id,"Phone scan"); break; }
     S.current[S.page]=el.dataset.id; S.qrRead[S.page]=null; S.lastRead="Picked from repair queue"; break;
   case "clear": S.current[S.page]=null; S.qrRead[S.page]=null; break;
   case "report": UI.reportFor=t.id; UI.form={}; UI.dialog="report"; break;
@@ -747,6 +841,7 @@ document.addEventListener("keydown",function(e){
   if(e.key==="Escape"&&UI.dialog){act("close");}
   if(UI.dialog==="pin"&&/^[0-9]$/.test(e.key)){act("key",{dataset:{k:e.key}});}
 });
+document.addEventListener("visibilitychange",function(){if(document.hidden&&UI.cam){stopCam();render();}});
 setInterval(function(){var c=document.getElementById("clock");if(c)c.textContent=tm(Date.now());},1000);
 function theme(){var t=document.documentElement.dataset.theme;if(t)return t;return window.matchMedia&&matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";}
 function setTheme(t){document.documentElement.dataset.theme=t;try{localStorage.setItem("spl-trolley-theme",t);}catch(e){}}
