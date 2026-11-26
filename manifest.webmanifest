@@ -1,0 +1,14 @@
+{
+  "name": "SPL Trolley Track",
+  "short_name": "Trolley Track",
+  "description": "Trolley repair tracking for SPL stations (prototype)",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#FAFAF9",
+  "theme_color": "#0092D6",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
