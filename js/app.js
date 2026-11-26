@@ -334,31 +334,41 @@ function tile(label,n,kind,sub){return '<div class="stat '+(kind==="info"?"":kin
    ZXing library, loaded on first use (iPhone, desktop). A recognised label goes
    through the same Bundle Nexus lookup as tapping a trolley in the demo list. */
 var ZXING_URL="https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js";
-var CAM={stream:null,timer:null,busy:false,last:null};
+var CAM={stream:null,timer:null,busy:false,last:null,info:null};
 function loadScript(src){return new Promise(function(ok,bad){var el=document.createElement("script");el.src=src;el.onload=ok;el.onerror=function(){bad(new Error("Couldn’t load the barcode reader. Check the internet connection."));};document.head.appendChild(el);});}
 function stopCam(){
   if(CAM.timer){clearInterval(CAM.timer);CAM.timer=null;}
   if(CAM.stream){CAM.stream.getTracks().forEach(function(t){t.stop();});CAM.stream=null;}
-  CAM.busy=false;CAM.last=null;UI.cam=null;
+  CAM.busy=false;CAM.last=null;CAM.info=null;UI.cam=null;
 }
-/* returns async function(video) -> decoded text or null */
-function makeDecoder(){
+/* the phone's built-in scanner, only if it really works: some Android phones list
+   BarcodeDetector but fail every call (scanner module not installed) */
+function nativeDecoder(){
+  if(!("BarcodeDetector" in window)) return Promise.resolve(null);
   var want=["qr_code","code_128","code_39","ean_13"];
-  var native=("BarcodeDetector" in window)?BarcodeDetector.getSupportedFormats().then(function(sup){
-      var f=want.filter(function(x){return sup.indexOf(x)>-1;});
-      if(f.indexOf("qr_code")<0) return null;
-      var d=new BarcodeDetector({formats:f});
-      return function(v){return d.detect(v).then(function(r){return r.length?r[0].rawValue:null;});};
-    }).catch(function(){return null;}):Promise.resolve(null);
-  return native.then(function(fn){
-    if(fn) return fn;
+  return BarcodeDetector.getSupportedFormats().then(function(sup){
+    var f=want.filter(function(x){return sup.indexOf(x)>-1;});
+    if(f.indexOf("qr_code")<0) return null;
+    var d=new BarcodeDetector({formats:f}), probe=document.createElement("canvas"); probe.width=probe.height=16;
+    return d.detect(probe).then(function(){
+      return {name:"built-in scanner",fn:function(v){return d.detect(v).then(function(r){return r.length?r[0].rawValue:null;});}};
+    },function(e){if(CAM.info)CAM.info.note="built-in scanner unavailable";return null;});
+  }).catch(function(){return null;});
+}
+/* returns {name, fn(video) -> Promise<text|null>} */
+function makeDecoder(){
+  return nativeDecoder().then(function(nat){
+    return nat||zxingDecoder();
+  });
+}
+function zxingDecoder(){
     return (window.ZXing?Promise.resolve():loadScript(ZXING_URL)).then(function(){
       var Z=window.ZXing, hints=new Map(), reader=new Z.MultiFormatReader();
       hints.set(Z.DecodeHintType.POSSIBLE_FORMATS,[Z.BarcodeFormat.QR_CODE,Z.BarcodeFormat.CODE_128,Z.BarcodeFormat.CODE_39,Z.BarcodeFormat.EAN_13]);
       hints.set(Z.DecodeHintType.TRY_HARDER,true);
       reader.setHints(hints);
       var cv=document.createElement("canvas"), cx=cv.getContext("2d",{willReadFrequently:true});
-      return function(v){
+      return {name:"ZXing reader",fn:function(v){
         var w=v.videoWidth,h=v.videoHeight; if(!w) return Promise.resolve(null);
         var k=Math.min(1,800/Math.max(w,h)); cv.width=Math.round(w*k); cv.height=Math.round(h*k);
         cx.drawImage(v,0,0,cv.width,cv.height);
@@ -368,9 +378,18 @@ function makeDecoder(){
         for(var i=0,j=0;j<lum.length;i+=4,j++) lum[j]=(px[i]*77+px[i+1]*150+px[i+2]*29)>>8;
         try{return Promise.resolve(reader.decodeWithState(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.RGBLuminanceSource(lum,cv.width,cv.height)))).getText());}
         catch(e){return Promise.resolve(null);}
-      };
+      }};
     });
-  });
+}
+/* status line inside the live camera view, so problems are visible on the phone */
+function camInfo(v){
+  var el=document.getElementById("vfInfo"), i=CAM.info; if(!el||!i) return;
+  var w=v&&v.videoWidth, parts=[i.name||"loading reader…"];
+  parts.push(w?w+"×"+v.videoHeight:"no picture yet");
+  parts.push(i.frames+" checks");
+  if(i.errs) parts.push(i.errs+" errors"+(i.lastErr?" ("+i.lastErr+")":""));
+  if(i.note) parts.push(i.note);
+  el.textContent=parts.join(" · ");
 }
 function camError(e){
   var n=e&&e.name;
@@ -386,13 +405,24 @@ function startCam(){
   UI.cam={page:pg,status:"starting"}; render();
   navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}}}).then(function(stream){
     if(!UI.cam||UI.cam.page!==S.page){stream.getTracks().forEach(function(t){t.stop();});return;}   /* left the screen meanwhile */
-    CAM.stream=stream; UI.cam.status="live"; render();
-    var v=document.getElementById("vfVideo"); v.srcObject=stream; var p=v.play(); if(p&&p.catch)p.catch(function(){});
-    return makeDecoder().then(function(decode){
+    CAM.stream=stream; CAM.info={name:"",frames:0,errs:0,lastErr:"",note:""}; UI.cam.status="live"; render();
+    var v=document.getElementById("vfVideo"); v.srcObject=stream;
+    var p=v.play(); if(p&&p.catch)p.catch(function(e){if(CAM.info){CAM.info.errs++;CAM.info.lastErr="video: "+(e.name||e);}});
+    camInfo(v);
+    return makeDecoder().then(function(dec){
       if(!CAM.stream) return;
+      CAM.info.name=dec.name;
       CAM.timer=setInterval(function(){
-        if(CAM.busy||!CAM.stream) return; CAM.busy=true;
-        decode(v).then(function(txt){CAM.busy=false; if(txt) onCode(String(txt).trim());},function(){CAM.busy=false;});
+        camInfo(v);
+        if(CAM.busy||!CAM.stream) return;
+        if(!v.videoWidth){ if(v.paused){var pp=v.play();if(pp&&pp.catch)pp.catch(function(){});} return; }   /* no frame yet */
+        CAM.busy=true; CAM.info.frames++;
+        dec.fn(v).then(function(txt){CAM.busy=false; if(txt) onCode(String(txt).trim());},function(e){
+          CAM.busy=false; CAM.info.errs++; CAM.info.lastErr=(e&&(e.message||e.name))||"decode failed";
+          /* built-in scanner keeps failing: switch to the ZXing reader */
+          if(dec.name!=="ZXing reader"&&CAM.info.errs>=5){dec={name:"switching…",fn:function(){return Promise.resolve(null);}};
+            zxingDecoder().then(function(z){dec=z;if(CAM.info){CAM.info.name=z.name;CAM.info.errs=0;CAM.info.note="built-in scanner failed, using ZXing";}});}
+        });
       },200);
     });
   }).catch(function(e){stopCam(); UI.cam={page:pg,status:"error",msg:camError(e)}; render();});
@@ -420,11 +450,11 @@ function viewfinder(){
   var cam=UI.cam&&UI.cam.page===S.page?UI.cam:null;
   var corners='<i></i><i></i><i></i><i></i><div class="vf-line"></div>';
   if(cam&&cam.status!=="error")
-    return '<div class="viewfinder live only-phone" data-key="vf-live"><video id="vfVideo" class="vf-video" playsinline muted autoplay></video>'+
+    return '<div class="viewfinder live" data-key="vf-live"><video id="vfVideo" class="vf-video" playsinline muted autoplay></video>'+
       '<div class="vf-frame" aria-hidden="true">'+corners+'</div>'+
-      '<div class="vf-text">'+(cam.status==="starting"?"Starting the camera…":"Point at the QR code or barcode")+'</div>'+
+      '<div class="vf-text">'+(cam.status==="starting"?"Starting the camera…":"Point at the QR code or barcode")+'<div class="vf-info" id="vfInfo"></div></div>'+
       '<button class="vf-stop" data-act="cam-stop" aria-label="Stop the camera">'+ic("x")+'</button></div>';
-  return '<div class="viewfinder only-phone" data-key="vf-idle"><div class="vf-frame" aria-hidden="true">'+corners+ic("qr",1.4)+'</div>'+
+  return '<div class="viewfinder" data-key="vf-idle"><div class="vf-frame" aria-hidden="true">'+corners+ic("qr",1.4)+'</div>'+
     '<div class="vf-text">'+(cam?esc(cam.msg):"Scan the trolley’s QR code or barcode")+'</div>'+
     '<button class="btn btn-primary vf-btn" data-act="cam-start">'+ic("camera")+(cam?"Try again":"Scan with camera")+'</button></div>';
 }
