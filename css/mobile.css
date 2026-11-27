@@ -352,3 +352,5 @@ html.phone body{overflow-x:hidden}
   .phone .verdict .w{font-size:23px}
   .tb{font-size:11px}
 }
+/* "Tap to start the camera" when the phone won't autoplay video */
+.vf-tap{position:absolute;left:50%;top:50%;z-index:3;transform:translate(-50%,-50%);white-space:nowrap}

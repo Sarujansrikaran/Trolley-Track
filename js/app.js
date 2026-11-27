@@ -86,7 +86,7 @@ function seed(){
     queue:[],alerts:[{id:1,asset:"T-1077",msg:"Damage reported: Broken castor",from:"J. Tan, Ward 4B",time:iso(20),seen:false}],
     log:[{time:iso(20),asset:"T-1077",from:"Available",to:"Faulty",who:"J. Tan",where:"Ward 4B, "+HOSPITAL,read:"Barcode",note:"Damage report: Broken castor"},
          {time:iso(30),asset:"T-1103",from:"Faulty",to:"In repair",who:"M. Rossi",where:"Soil sort, SPL Broadmeadows",read:"Barcode",note:"Transferred to engineering"}],
-    dispatch:{run:["T-1042","T-1103","T-1121","T-1135"],result:null,done:false,at:null},
+    dispatch:{no:14,run:["T-1042","T-1103","T-1121","T-1135"],result:null,done:false,at:null},
     reg:{},offlineSince:null};
 }
 /* The QR label carries a Bundle Nexus asset key, not the RFID. The RFID (and asset no.)
@@ -117,13 +117,26 @@ function st(s){return '<span class="st '+s.replace(" ","-")+'"><span class="dot 
 function count(s){return Object.keys(S.trolleys).filter(function(k){return T(k).state===s;}).length;}
 
 function log(asset,from,to,read,note){var a=actor();S.log.unshift({time:new Date().toISOString(),asset:asset,from:from,to:to,who:a.user,where:a.place,read:read||"App",note:note||""});}
-function setState(id,to,read,note){var t=T(id),f=t.state;t.state=to;log(id,f,to,read,note);}
+function setState(id,to,read,note){var t=T(id),f=t.state;t.state=to;if(f!==to)staleRun(id);log(id,f,to,read,note);}
+/* a trolley on the dispatch run changed after the portal read it: that read no longer counts */
+function staleRun(id){var d=S.dispatch;if(d&&!d.done&&d.result&&d.run.indexOf(id)>-1){d.result=null;UI.swapOut=null;}}
+function runNo(){return S.dispatch.no||14;}
+/* engineering's repair queue: Faulty, In repair, or flagged (never Retired) */
+function inQueue(t){return t.state!=="Retired"&&(t.state==="Faulty"||t.state==="In repair"||!!t.flag);}
+/* damage reports saved on this device while offline, not yet synced */
+function queuedFor(id){return S.queue.filter(function(r){return r.asset===id;});}
 function alertEng(asset,msg){var a=actor();S.alerts.unshift({id:Date.now()+Math.random(),asset:asset,msg:msg,from:a.user+", "+a.place.split(",")[0],time:new Date().toISOString(),seen:false});}
-function toast(kind,text){UI.toast={kind:kind,text:text,id:Date.now()};var id=UI.toast.id;setTimeout(function(){if(UI.toast&&UI.toast.id===id){UI.toast=null;renderOverlay();}},3800);}
+function toast(kind,text){UI.toast={kind:kind,text:text,id:Date.now()};var id=UI.toast.id;setTimeout(function(){if(UI.toast&&UI.toast.id===id){UI.toast=null;refreshOverlay();}},3800);}
+/* Re-renders that don't come from a button press (timers, lookups, camera, screen changes).
+   Save what's typed in open fields first, or the re-render puts the old values back. */
+function refresh(){readForm();render();}
+function refreshOverlay(){readForm();renderOverlay();}
 
 function applyReport(r){
   var t=T(r.asset);
-  if(t.reason){
+  staleRun(r.asset);
+  /* an Available trolley has no open Reason; if an old one was left behind, start a new one */
+  if(t.reason&&t.state!=="Available"){
     t.reason.count=(t.reason.count||1)+1;
     if(r.notes)t.reason.notes=(t.reason.notes?t.reason.notes+" | ":"")+r.notes;
     if(r.redCard)t.reason.redCard=true;
@@ -148,6 +161,8 @@ function leaving(n){return n.nodeType===1&&n.classList.contains("is-leaving");}
 function removeNode(n){
   if(n.nodeType===1&&n.hasAttribute("data-exit")){
     n.classList.add("is-leaving"); n.removeAttribute("data-key"); n.removeAttribute("id");
+    /* a closing dialog keeps its fields for the exit animation: drop their ids so readForm() can't read them */
+    [].forEach.call(n.querySelectorAll("[id]"),function(x){x.removeAttribute("id");});
     setTimeout(function(){if(n.parentNode)n.parentNode.removeChild(n);},EXIT_MS);
   } else n.parentNode.removeChild(n);
 }
@@ -208,7 +223,7 @@ function isPhone(){return PREVIEW||narrow();}
 function applyMode(tabs){var r=document.documentElement.classList;r.toggle("phone",isPhone());r.toggle("phone-frame",PREVIEW&&!narrow());r.toggle("has-tabs",!!tabs);}
 function initials(u){return u.user.replace(/[^A-Z]/g,"").slice(0,2);}
 function badge(pg){
-  if(pg.id==="eng"){var n=Object.keys(S.trolleys).filter(function(k){var t=T(k);return t.state==="Faulty"||t.state==="In repair"||t.flag;}).length;return n||"";}
+  if(pg.id==="eng"){var n=Object.keys(S.trolleys).filter(function(k){return inQueue(T(k));}).length;return n||"";}
   if(pg.id==="hospital")return S.queue.length||"";
   if(pg.id==="fleet")return Object.keys(S.trolleys).length;
   return "";
@@ -254,7 +269,7 @@ function render(){
   if(UI.cam&&UI.cam.page!==S.page) stopCam();
   var p=P();
   var unseen=S.alerts.filter(function(a){return !a.seen;}).length;
-  var jobs=Object.keys(S.trolleys).filter(function(k){var t=T(k);return t.state==="Faulty"||t.state==="In repair"||t.flag;}).length;
+  var jobs=Object.keys(S.trolleys).filter(function(k){return inQueue(T(k));}).length;
   var h=topbar(u)+appbar(u,p.name);
 
   /* banners */
@@ -275,7 +290,7 @@ function render(){
   /* sidebar: only the pages this user is allowed to see */
   function navItem(pg){
     var c='';
-    if(pg.id==="eng"&&(jobs||unseen))c='<span class="nav-count">'+jobs+'</span>';
+    if(pg.id==="eng"&&jobs)c='<span class="nav-count">'+jobs+'</span>';
     if(pg.id==="hospital"&&S.queue.length)c='<span class="nav-count">'+S.queue.length+'</span>';
     if(pg.id==="fleet")c='<span class="nav-count">'+Object.keys(S.trolleys).length+'</span>';
     return '<button class="nav-item" data-act="go" data-p="'+pg.id+'"'+(pg.id===S.page?' aria-current="page"':'')+'>'+ic(pg.icon,1.7)+esc(pg.name)+c+'</button>';
@@ -333,8 +348,10 @@ function tile(label,n,kind,sub){return '<div class="stat '+(kind==="info"?"":kin
    the browser's own BarcodeDetector where it exists (Android Chrome), otherwise the
    ZXing library, loaded on first use (iPhone, desktop). A recognised label goes
    through the same Bundle Nexus lookup as tapping a trolley in the demo list. */
+var APP_VERSION=9;  /* shown in the camera status line; keep in step with ?v= in index.html */
 var ZXING_URL="https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js";
-var CAM={stream:null,timer:null,busy:false,last:null,info:null};
+var CAM={stream:null,timer:null,busy:false,last:null,info:null,lastTry:0};
+var ZXING_EVERY_MS=350, ZXING_MAX_PX=640;   /* ZXing runs on the main thread: check less often, on a smaller frame */
 function loadScript(src){return new Promise(function(ok,bad){var el=document.createElement("script");el.src=src;el.onload=ok;el.onerror=function(){bad(new Error("Couldn’t load the barcode reader. Check the internet connection."));};document.head.appendChild(el);});}
 function stopCam(){
   if(CAM.timer){clearInterval(CAM.timer);CAM.timer=null;}
@@ -370,7 +387,7 @@ function zxingDecoder(){
       var cv=document.createElement("canvas"), cx=cv.getContext("2d",{willReadFrequently:true});
       return {name:"ZXing reader",fn:function(v){
         var w=v.videoWidth,h=v.videoHeight; if(!w) return Promise.resolve(null);
-        var k=Math.min(1,800/Math.max(w,h)); cv.width=Math.round(w*k); cv.height=Math.round(h*k);
+        var k=Math.min(1,ZXING_MAX_PX/Math.max(w,h)); cv.width=Math.round(w*k); cv.height=Math.round(h*k);
         cx.drawImage(v,0,0,cv.width,cv.height);
         /* own greyscale: ZXing's HTMLCanvasElementLuminanceSource inverts every other frame,
            which together with TRY_HARDER never decodes */
@@ -384,7 +401,7 @@ function zxingDecoder(){
 /* status line inside the live camera view, so problems are visible on the phone */
 function camInfo(v){
   var el=document.getElementById("vfInfo"), i=CAM.info; if(!el||!i) return;
-  var w=v&&v.videoWidth, parts=[i.name||"loading reader…"];
+  var w=v&&v.videoWidth, parts=["v"+APP_VERSION, i.name||"loading reader…"];
   parts.push(w?w+"×"+v.videoHeight:"no picture yet");
   parts.push(i.frames+" checks");
   if(i.errs) parts.push(i.errs+" errors"+(i.lastErr?" ("+i.lastErr+")":""));
@@ -398,49 +415,75 @@ function camError(e){
          n==="NotReadableError"?"The camera is being used by another app. Close it and try again.":
          (e&&e.message)||"Couldn’t start the camera.";
 }
+/* ask for the back camera; if the phone rejects those settings, retry with simpler ones */
+function openCamera(){
+  var tries=[
+    {audio:false,video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}}},
+    {audio:false,video:{facingMode:"environment"}},
+    {audio:false,video:true}];
+  function next(i,lastErr){
+    if(i>=tries.length) return Promise.reject(lastErr);
+    return navigator.mediaDevices.getUserMedia(tries[i]).catch(function(e){
+      if(e&&(e.name==="NotAllowedError"||e.name==="SecurityError")) throw e;   /* blocked: retrying won't help */
+      return next(i+1,e);
+    });
+  }
+  return next(0,null);
+}
+/* phones (iPhone in Low Power Mode especially) may refuse to start video without a tap */
+function playVideo(v){
+  v.muted=true; v.playsInline=true; v.setAttribute("playsinline",""); v.setAttribute("webkit-playsinline","");
+  var p=v.play();
+  if(p&&p.then) p.then(function(){if(UI.cam&&UI.cam.needTap){UI.cam.needTap=false;refresh();}},function(e){
+    if(CAM.info){CAM.info.errs++;CAM.info.lastErr="video: "+(e.name||e);}
+    if(UI.cam&&!UI.cam.needTap){UI.cam.needTap=true;refresh();}
+  });
+}
 function startCam(){
   var pg=S.page;
-  if(!window.isSecureContext){UI.cam={page:pg,status:"error",msg:"The camera only works on a secure https link."};return render();}
+  if(!window.isSecureContext){UI.cam={page:pg,status:"error",msg:"The camera only works on a secure https link (or localhost). Open the app from its https address, or tap a demo trolley below."};return render();}
   if(!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)){UI.cam={page:pg,status:"error",msg:"This browser can’t use the camera."};return render();}
   UI.cam={page:pg,status:"starting"}; render();
-  navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}}}).then(function(stream){
+  openCamera().then(function(stream){
     if(!UI.cam||UI.cam.page!==S.page){stream.getTracks().forEach(function(t){t.stop();});return;}   /* left the screen meanwhile */
-    CAM.stream=stream; CAM.info={name:"",frames:0,errs:0,lastErr:"",note:""}; UI.cam.status="live"; render();
+    CAM.stream=stream; CAM.info={name:"",frames:0,errs:0,lastErr:"",note:""}; UI.cam.status="live"; refresh();
     var v=document.getElementById("vfVideo"); v.srcObject=stream;
-    var p=v.play(); if(p&&p.catch)p.catch(function(e){if(CAM.info){CAM.info.errs++;CAM.info.lastErr="video: "+(e.name||e);}});
+    playVideo(v);
     camInfo(v);
-    return makeDecoder().then(function(dec){
-      if(!CAM.stream) return;
-      CAM.info.name=dec.name;
-      CAM.timer=setInterval(function(){
+    /* the loop starts now so the status line updates while the reader is still loading */
+    var dec=null;
+    CAM.timer=setInterval(function(){
         camInfo(v);
-        if(CAM.busy||!CAM.stream) return;
-        if(!v.videoWidth){ if(v.paused){var pp=v.play();if(pp&&pp.catch)pp.catch(function(){});} return; }   /* no frame yet */
-        CAM.busy=true; CAM.info.frames++;
+        if(!dec||CAM.busy||!CAM.stream) return;
+        if(!v.videoWidth) return;   /* no frame yet */
+        if(dec.name==="ZXing reader"&&Date.now()-CAM.lastTry<ZXING_EVERY_MS) return;
+        CAM.lastTry=Date.now(); CAM.busy=true; CAM.info.frames++;
         dec.fn(v).then(function(txt){CAM.busy=false; if(txt) onCode(String(txt).trim());},function(e){
           CAM.busy=false; CAM.info.errs++; CAM.info.lastErr=(e&&(e.message||e.name))||"decode failed";
           /* built-in scanner keeps failing: switch to the ZXing reader */
           if(dec.name!=="ZXing reader"&&CAM.info.errs>=5){dec={name:"switching…",fn:function(){return Promise.resolve(null);}};
             zxingDecoder().then(function(z){dec=z;if(CAM.info){CAM.info.name=z.name;CAM.info.errs=0;CAM.info.note="built-in scanner failed, using ZXing";}});}
         });
-      },200);
-    });
-  }).catch(function(e){stopCam(); UI.cam={page:pg,status:"error",msg:camError(e)}; render();});
+    },200);
+    return makeDecoder().then(function(d){ if(CAM.stream&&CAM.info){dec=d; CAM.info.name=d.name;} });
+  }).catch(function(e){stopCam(); UI.cam={page:pg,status:"error",msg:camError(e)}; refresh();});
 }
 /* a code was read: QR key, barcode or asset number */
 function onCode(txt){
   var id=Object.keys(S.trolleys).filter(function(k){var t=T(k);return t.qr===txt||t.barcode===txt||k===txt;})[0];
-  if(!id){ if(CAM.last!==txt){CAM.last=txt; toast("warn","That isn’t a trolley label: "+txt); renderOverlay();} return; }
+  if(!id){ if(CAM.last!==txt){CAM.last=txt; toast("warn","That isn’t a trolley label: "+txt); refreshOverlay();} return; }
   if(navigator.vibrate) navigator.vibrate(60);
   var how=T(id).qr===txt?"QR code":"barcode";
   stopCam(); lookupTrolley(id,"Camera ("+how+")");
 }
 /* label -> Bundle Nexus -> asset no. + EPC, then show the trolley */
 function lookupTrolley(id,how){
-  var pg=S.page, qr=T(id).qr;
-  UI.lookup={page:pg,qr:qr}; S.current[pg]=null; render();
+  var pg=S.page, qr=T(id).qr, who=S.user, L={page:pg,qr:qr};
+  UI.lookup=L; S.current[pg]=null; render();
   bundleLookup(qr,function(rid,cached){
-    UI.lookup=null;
+    /* ignore a result that's no longer wanted: signed out, demo reset, or a newer scan started */
+    if(UI.lookup!==L||S.user!==who) return;
+    UI.lookup=null; readForm();
     if(!rid) toast("fault","Bundle Nexus doesn’t recognise "+qr+". Try scanning again.");
     else{S.current[pg]=rid; S.qrRead[pg]={id:rid,cached:cached}; S.lastRead=how+(cached?" (cached Bundle data)":" via Bundle Nexus");}
     render();
@@ -453,6 +496,7 @@ function viewfinder(){
     return '<div class="viewfinder live" data-key="vf-live"><video id="vfVideo" class="vf-video" playsinline muted autoplay></video>'+
       '<div class="vf-frame" aria-hidden="true">'+corners+'</div>'+
       '<div class="vf-text">'+(cam.status==="starting"?"Starting the camera…":"Point at the QR code or barcode")+'<div class="vf-info" id="vfInfo"></div></div>'+
+      (cam.needTap?'<button class="btn btn-primary vf-tap" data-act="cam-play">'+ic("camera")+'Tap to start the camera</button>':'')+
       '<button class="vf-stop" data-act="cam-stop" aria-label="Stop the camera">'+ic("x")+'</button></div>';
   return '<div class="viewfinder" data-key="vf-idle"><div class="vf-frame" aria-hidden="true">'+corners+ic("qr",1.4)+'</div>'+
     '<div class="vf-text">'+(cam?esc(cam.msg):"Scan the trolley’s QR code or barcode")+'</div>'+
@@ -463,7 +507,7 @@ function viewfinder(){
 function scanPanel(opts){
   opts=opts||{};
   var ids=Object.keys(S.trolleys).sort();
-  var sel=S.current[S.page];
+  var sel=S.current[S.page], busy=UI.lookup&&UI.lookup.page===S.page;
   return '<section class="panel pick scan"><div class="panel-head"><div class="panel-title">'+esc(opts.title||"Scan the QR code or barcode")+'</div><div class="panel-desc">Tap a trolley to simulate a camera scan</div></div>'+
    /* phone only: camera viewfinder above the demo list */
    viewfinder()+
@@ -471,7 +515,7 @@ function scanPanel(opts){
    '<div class="panel-body"><div class="rows">'+ids.map(function(id){var t=T(id);
      /* the label only carries the Bundle key; the asset no. and EPC come back from Bundle Nexus */
      var pending=UI.lookup&&UI.lookup.page===S.page&&UI.lookup.qr===t.qr;
-     return '<button class="row" data-act="scan" data-id="'+id+'" aria-current="'+(sel===id)+'"'+(UI.lookup?' disabled':'')+'><span class="sq">'+ic("qr")+'</span><span class="grow"><div class="id">'+esc(id)+'</div><div class="meta">'+esc(t.qr)+' · '+esc(t.barcode)+'</div></span>'+
+     return '<button class="row" data-act="scan" data-id="'+id+'" aria-current="'+(sel===id)+'"'+(busy?' disabled':'')+'><span class="sq">'+ic("qr")+'</span><span class="grow"><div class="id">'+esc(id)+'</div><div class="meta">'+esc(t.qr)+' · '+esc(t.barcode)+'</div></span>'+
        (pending?'<span class="tag warn">Looking up…</span>':sel===id?'<span class="tag">Read</span>':'')+'</button>';}).join("")+'</div></div>'+
    '<div class="panel-foot">'+ic("info")+'<span>No labels yet? Open <b>test-labels.html</b> on a PC and scan those. The camera reads the QR code or the barcode. Bundle Nexus returns the trolley’s asset number and EPC, and every report is stored against that EPC. RFID itself is read by the fixed portals at the laundry, not by phones.</span></div></section>';
 }
@@ -482,7 +526,9 @@ function qrNote(t){
     (q.cached?'<div style="font-size:14px;color:var(--text-muted);margin-top:4px">Bundle Nexus can’t be reached. The status shown may be out of date.</div>':'')+'</div></div>';
 }
 function details(t,noReason){
-  var h='<dl class="kv"><dt>Asset</dt><dd class="mono">'+esc(t.id)+'</dd><dt>State</dt><dd>'+st(t.state)+'</dd><dt>Description</dt><dd>'+esc(t.desc)+'</dd><dt>Pool customer</dt><dd>'+esc(t.pool)+'</dd><dt>Location</dt><dd>'+locHtml(t)+'</dd><dt>Barcode</dt><dd class="mono">'+esc(t.barcode)+'</dd><dt>QR code</dt><dd class="mono">'+esc(t.qr||"Not linked")+'</dd><dt>EPC (RFID)</dt><dd class="mono">'+esc(t.rfid)+'</dd></dl>';
+  var q=queuedFor(t.id), h='';
+  if(q.length) h+='<div class="note warn">'+ic("clock").replace('<svg','<svg width="20" height="20"')+'<div><b>'+(q.length>1?q.length+' damage reports':'A damage report')+' saved on this device, waiting to sync</b> ('+q.map(function(r){return esc(r.code);}).join(", ")+'). It will be sent when the connection is back. No need to report it again.</div></div>';
+  h+='<dl class="kv"><dt>Asset</dt><dd class="mono">'+esc(t.id)+'</dd><dt>State</dt><dd>'+st(t.state)+'</dd><dt>Description</dt><dd>'+esc(t.desc)+'</dd><dt>Pool customer</dt><dd>'+esc(t.pool)+'</dd><dt>Location</dt><dd>'+locHtml(t)+'</dd><dt>Barcode</dt><dd class="mono">'+esc(t.barcode)+'</dd><dt>QR code</dt><dd class="mono">'+esc(t.qr||"Not linked")+'</dd><dt>EPC (RFID)</dt><dd class="mono">'+esc(t.rfid)+'</dd></dl>';
   if(t.reason&&!noReason){var r=t.reason;
     h+='<div class="panel" style="box-shadow:none"><div class="panel-head"><div class="panel-title">Open Reason: '+esc(r.code)+'</div>'+(r.count>1?'<span class="tag fault">'+r.count+' reports</span>':'')+'</div><div class="panel-body"><dl class="kv">'+
      '<dt>Reported by</dt><dd>'+esc(r.reporter)+'</dd><dt>Where</dt><dd>'+esc(r.where)+'</dd><dt>When</dt><dd class="mono">'+esc(dtm(r.date))+'</dd><dt>Notes</dt><dd>'+(r.notes?esc(r.notes):'<span style="color:var(--text-muted)">None</span>')+'</dd>'+
@@ -539,7 +585,7 @@ function pageBody(){
 
   case "eng":
     var unseen=S.alerts.filter(function(a){return !a.seen;});
-    var jobs=Object.keys(S.trolleys).sort().map(T).filter(function(x){return x.state==="Faulty"||x.state==="In repair"||x.flag;});
+    var jobs=Object.keys(S.trolleys).sort().map(T).filter(inQueue);
     var left='<section class="panel"><div class="panel-head"><div class="panel-title">Repair queue</div><div class="panel-desc">'+jobs.length+' trolley'+(jobs.length===1?'':'s')+'</div></div><div class="panel-body"><div class="rows">'+
       (jobs.length?jobs.map(function(x){return '<button class="row" data-act="scan" data-id="'+x.id+'" aria-current="'+(S.current.eng===x.id)+'"><span class="sq">'+ic("wrench")+'</span><span class="grow"><div class="id">'+esc(x.id)+'</div><div class="meta txt">'+esc(x.reason?x.reason.code:"No Reason recorded")+' · '+(x.loc&&x.loc.at==="laundry"?'<b class="here">In laundry</b>':'Still at hospital')+'</div>'+(x.flag?'<div class="flag" style="margin-top:4px">Flagged at '+esc(x.flag.by.split(",")[0])+'</div>':'')+'</span><span class="tag '+({"Faulty":"fault","In repair":"","Available":"ok","Retired":"off"}[x.state])+'">'+esc(x.state)+'</span></button>';}).join(""):'<div class="empty">'+ic("tick",1.7)+'<div>Nothing waiting. Every trolley is Available or retired.</div></div>')+
       '</div></div></section>';
@@ -569,9 +615,11 @@ function pageBody(){
     var pi;
     if(!t) pi=emptyState("Scan the trolley before you start packing.");
     else if(t.state==="Available") pi=verdict("ok","AVAILABLE","Go ahead and pack "+esc(t.id)+".")+details(t)+'<div class="btnrow"><button class="btn" data-act="clear">Next trolley</button><button class="btn btn-danger-quiet" data-act="report">Spotted damage? Report it</button></div>';
+    else if(t.state==="Retired") pi=verdict("off","RETIRED","Do not pack. This trolley has been retired. Take it out of use and send it to engineering for disposal.")+details(t)+
+       '<div class="btnrow"><button class="btn" data-act="clear">Next trolley</button></div>';
     else{
       var notified=t.flag&&t.flag.stage==="packing";
-      pi=verdict(t.state==="Retired"?"off":"fault",t.state==="Retired"?"RETIRED":"UNDER REPAIR","Do not pack."+(t.reason?" Reason: "+esc(t.reason.code)+".":""))+details(t)+
+      pi=verdict("fault","UNDER REPAIR","Do not pack."+(t.reason?" Reason: "+esc(t.reason.code)+".":""))+details(t)+
        (notified?'<div class="note">'+ic("tick").replace('<svg','<svg width="20" height="20"')+'<div><b>Engineering notified at <span class="mono">'+tm(t.flag.time)+'</span>.</b> Move the trolley to the repair bay.</div></div>':
        '<div class="btnrow"><button class="btn btn-primary" data-act="notify">'+ic("bell")+'Notify engineering: found in production</button><button class="btn" data-act="clear">Next trolley</button></div>');
     }
@@ -583,23 +631,25 @@ function pageBody(){
     if(!t) pr=emptyState("Scan a trolley on the production floor to check it’s fit to use.");
     else if(t.state==="Available") pr=verdict("ok","OK TO USE",esc(t.id)+" is Available. No damage reported.")+details(t)+
       '<div class="btnrow"><button class="btn" data-act="clear">Next trolley</button><button class="btn btn-danger-quiet" data-act="report">Damage found, report it</button></div>';
+    else if(t.state==="Retired") pr=verdict("off","RETIRED","This trolley has been retired. Take it out of use and send it to engineering for disposal.")+details(t)+
+       '<div class="btnrow"><button class="btn" data-act="clear">Next trolley</button></div>';
     else{
-      var flagged=t.flag&&t.flag.stage==="production", retired=t.state==="Retired";
-      pr=verdict(retired?"off":"fault",retired?"RETIRED":"SHOULDN’T BE IN PRODUCTION",(retired?"This trolley has been retired.":"This trolley is "+esc(t.state)+(t.reason?" ("+esc(t.reason.code)+")":"")+".")+" Take it out of use.")+details(t)+
+      var flagged=t.flag&&t.flag.stage==="production";
+      pr=verdict("fault","SHOULDN’T BE IN PRODUCTION","This trolley is "+esc(t.state)+(t.reason?" ("+esc(t.reason.code)+")":"")+". Take it out of use.")+details(t)+
        (flagged?'<div class="note">'+ic("tick").replace('<svg','<svg width="20" height="20"')+'<div><b>Flagged to engineering at <span class="mono">'+tm(t.flag.time)+'</span>.</b> Move the trolley to the repair bay.</div></div>':
-       '<div class="btnrow"><button class="btn btn-primary" data-act="notify">'+ic("bell")+'Flag: found in production</button>'+(retired?'':'<button class="btn btn-danger-quiet" data-act="report">Add more damage</button>')+'<button class="btn" data-act="clear">Next trolley</button></div>');
+       '<div class="btnrow"><button class="btn btn-primary" data-act="notify">'+ic("bell")+'Flag: found in production</button><button class="btn btn-danger-quiet" data-act="report">Add more damage</button><button class="btn" data-act="clear">Next trolley</button></div>');
     }
     return stats([["Faulty","fault","Should not be in use"],["In repair","info","Should be in engineering"]])+gridOpen()+scanPanel()+resultPanel("Production check",pr)+'</div>';
 
   case "dispatch":
     var d=S.dispatch, bl=d.result?d.result.blocked:[];
     var rows=d.run.map(function(id){var x=T(id),b=bl.indexOf(id)>-1;
-      return '<tr><td class="mono">'+esc(id)+'</td><td>'+esc(x.desc)+'</td><td>'+(d.result?st(x.state):'<span style="color:var(--text-faint)">Not read</span>')+(b&&x.reason?'<div class="sub">Open Reason: '+esc(x.reason.code)+'</div>':'')+'</td><td>'+(b&&!d.done?'<button class="btn btn-sm btn-blue" data-act="swap" data-id="'+id+'">Remove and notify engineering</button>':'')+'</td></tr>';}).join("");
+      return '<tr><td class="mono">'+esc(id)+'</td><td>'+esc(x.desc)+'</td><td>'+(d.result?st(x.state):'<span style="color:var(--text-faint)">Not read</span>')+(b&&x.reason?'<div class="sub">Open Reason: '+esc(x.reason.code)+'</div>':'')+'</td><td>'+(b&&!d.done?(UI.swapOut===id?'<span class="tag warn">Pick a replacement below</span>':UI.swapOut?'':'<button class="btn btn-sm btn-blue" data-act="swap" data-id="'+id+'">Remove and notify engineering</button>'):'')+'</td></tr>';}).join("");
     var top='';
     if(d.done) top=verdict("ok","DISPATCHED",d.run.length+" trolleys sent to "+esc(HOSPITAL)+" at <span class='mono'>"+tm(d.at)+"</span>. The dispatch portal read each EPC, so every trolley now shows as at the hospital.")+'<div class="btnrow"><button class="btn btn-primary" data-act="new-run">Start next run</button></div>';
-    else if(d.result&&!bl.length) top=verdict("ok","ALL CLEAR","Every trolley on this run is Available.")+'<div class="btnrow"><button class="btn btn-ok" data-act="dispatch">'+ic("truck")+'Dispatch to '+esc(HOSPITAL)+'</button></div>';
+    else if(d.result&&!bl.length) top=verdict("ok","ALL CLEAR","Every trolley on this run is Available.")+'<div class="btnrow"><button class="btn btn-ok" data-act="dispatch"'+(S.online?'':' disabled')+'>'+ic("truck")+'Dispatch to '+esc(HOSPITAL)+'</button></div>';
     else if(d.result) top=verdict("fault","DISPATCH BLOCKED","Swap out the trolleys marked below, then read the run again.");
-    var runP='<section class="panel"><div class="panel-head"><div class="panel-title">Run 14 to '+esc(HOSPITAL)+'</div><div class="panel-desc">'+d.run.length+' trolleys at the portal</div></div><div class="panel-body"><div class="tablewrap"><table class="table"><thead><tr><th>Trolley</th><th>Description</th><th>State</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div></div>'+
+    var runP='<section class="panel"><div class="panel-head"><div class="panel-title">Run '+runNo()+' to '+esc(HOSPITAL)+'</div><div class="panel-desc">'+d.run.length+' trolleys at the portal</div></div><div class="panel-body"><div class="tablewrap"><table class="table"><thead><tr><th>Trolley</th><th>Description</th><th>State</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div></div>'+
       (d.done?'':'<div class="panel-foot" style="justify-content:flex-end;align-items:center">'+(S.online?'':'<span style="margin-right:auto">Offline: the portal can’t confirm states, so dispatch is held. (Offline rules still to be agreed.)</span>')+'<button class="btn btn-primary" data-act="verify"'+(S.online?'':' disabled')+'>'+ic("rfid")+(d.result?'Read the run again':'Read trolleys at portal')+'</button></div>')+'</section>';
     var pick='';
     if(UI.swapOut){
@@ -736,6 +786,12 @@ function readForm(){
   if(g("rDesc"))S.reg.desc=g("rDesc").value;
   if(g("rPool"))S.reg.pool=g("rPool").value;
 }
+/* the dispatch portal reads every EPC on the run; anything not Available blocks it */
+function readRun(){
+  var d=S.dispatch, n=runNo(); d.result={blocked:d.run.filter(function(id){return T(id).state!=="Available";})}; d.at=new Date().toISOString(); UI.swapOut=null;
+  d.run.slice().reverse().forEach(function(id){var x=T(id),ok=x.state==="Available";S.reads.unshift({time:d.at,portal:"Dispatch portal",epc:x.rfid,id:id,state:x.state,result:ok?"Read on run "+n+". Available.":"Read on run "+n+". "+x.state+", run blocked.",kind:ok?"ok":"fault"});});
+  log("Run "+n,"Check",d.result.blocked.length?"Blocked":"Clear","RFID portal",d.result.blocked.length?"Blocked by "+d.result.blocked.join(", "):"All "+d.run.length+" trolleys Available");
+}
 /* Admins go straight through; anyone else needs an admin to enter the PIN (approval). */
 function needAdmin(next){if(isAdmin()){next();return;}UI.dialog="pin";UI.pin="";UI.pinErr=null;UI.pinNext=next;}
 function signIn(u){S.user=u.id;S.page=u.pages[0];S.current={};S.qrRead={};toast("ok","Signed in as "+u.user+", "+u.role+".");}
@@ -771,12 +827,13 @@ function act(a,el){
   case "close": UI.dialog=null; UI.form={}; UI.pinNext=null; break;
   case "cam-start": startCam(); return;
   case "cam-stop": stopCam(); break;
+  case "cam-play": var cv2=document.getElementById("vfVideo"); if(cv2) playVideo(cv2); return;
   case "portal-in":
     var wasBad=portalRead(el.dataset.id,"inbound");
     toast(wasBad?"warn":"ok",el.dataset.id+" read at the inbound portal."+(wasBad?" It’s faulty, so engineering has been alerted.":""));
     break;
   case "scan":
-    if(UI.lookup) break;
+    if(UI.lookup&&UI.lookup.page===S.page) break;
     if(S.page!=="eng"){ lookupTrolley(el.dataset.id,"Phone scan"); break; }
     S.current[S.page]=el.dataset.id; S.qrRead[S.page]=null; S.lastRead="Picked from repair queue"; break;
   case "clear": S.current[S.page]=null; S.qrRead[S.page]=null; break;
@@ -812,42 +869,47 @@ function act(a,el){
     var rn=(UI.form.reuse||"").trim(), to2=UI.form.to||"Available", a5=actor(), now5=new Date().toISOString();
     if(!rn){UI.form.err=to2==="Available"?"Say what was checked or fixed.":"Say what needs doing first.";break;}
     t.reuses=t.reuses||[]; t.reuses.unshift({date:now5,notes:rn,by:a5.user,to:to2});
-    t.retired=null; t.flag=null;
+    t.retired=null; t.flag=null; t.reason=null;   /* reused: the old Reason is closed */
     if(to2==="In repair") t.reason={code:"Refurbish before reuse",notes:rn,photo:false,reporter:a5.user,where:a5.place,date:now5,redCard:false,count:1};
     setState(t.id,to2,"Phone scan via Bundle Nexus","Reused after retirement ("+(to2==="Available"?"ready to use":"repair first")+"): "+rn);
     UI.dialog=null; UI.form={};
     toast("ok",t.id+(to2==="Available"?" is back in service and Available.":" is back in the repair queue.")); break;
   case "retire-confirm":
     if(!(UI.form.why||"").trim()){UI.form.err="Say why it can’t be repaired.";break;}
-    t.retired={why:UI.form.why.trim(),date:new Date().toISOString(),by:actor().user};
-    t.flag=null; setState(t.id,"Retired","Barcode","Retired: "+UI.form.why.trim()); S.alerts.forEach(function(x){if(x.asset===t.id)x.seen=true;});
+    /* the open Reason is closed on retirement; keep its code with the retirement record */
+    t.retired={why:UI.form.why.trim(),date:new Date().toISOString(),by:actor().user,reason:t.reason?t.reason.code:null};
+    t.reason=null; t.flag=null; setState(t.id,"Retired","Barcode","Retired: "+UI.form.why.trim()); S.alerts.forEach(function(x){if(x.asset===t.id)x.seen=true;});
     UI.dialog=null; UI.form={}; toast("info",t.id+" retired and removed from the fleet."); break;
   case "ack": S.alerts.forEach(function(x){x.seen=true;}); break;
   case "notify":
     /* used by packing and production; the flag remembers which stage raised it */
+    if(t.state==="Retired"||t.state==="Available") break;
     var a3=actor(), area=S.page==="production"?"on the production floor":"in the packing area";
     t.flag={by:a3.user+", "+a3.place.split(",")[0],where:a3.place,stage:S.page,time:new Date().toISOString(),msg:"Found "+area+" while "+t.state+". Set aside for repair."};
     alertEng(t.id,"Found "+area+", not repaired"); log(t.id,t.state,t.state,S.lastRead,"Engineering notified: found "+area+" while "+t.state);
     toast("ok","Engineering notified about "+t.id+"."); break;
-  case "verify":
-    var d=S.dispatch; d.result={blocked:d.run.filter(function(id){return T(id).state!=="Available";})}; d.at=new Date().toISOString(); UI.swapOut=null;
-    d.run.slice().reverse().forEach(function(id){var x=T(id),ok=x.state==="Available";S.reads.unshift({time:d.at,portal:"Dispatch portal",epc:x.rfid,id:id,state:x.state,result:ok?"Read on run 14. Available.":"Read on run 14. "+x.state+", run blocked.",kind:ok?"ok":"fault"});});
-    log("Run 14","Check",d.result.blocked.length?"Blocked":"Clear","RFID portal",d.result.blocked.length?"Blocked by "+d.result.blocked.join(", "):"All "+d.run.length+" trolleys Available"); break;
+  case "verify": if(S.online) readRun(); break;
   case "swap":
-    var id=el.dataset.id, x=T(id), a4=actor();
-    x.flag={by:a4.user+", "+a4.place.split(",")[0],where:a4.place,stage:"dispatch",time:new Date().toISOString(),msg:"Pulled from dispatch run 14 while "+x.state+"."};
-    alertEng(id,"Pulled from dispatch, not repaired"); log(id,x.state,x.state,"RFID portal","Removed from run 14; engineering notified");
+    if(UI.swapOut) break;   /* one at a time: finish picking a replacement first */
+    var id=el.dataset.id, x=T(id), a4=actor(), rn1=runNo();
+    x.flag={by:a4.user+", "+a4.place.split(",")[0],where:a4.place,stage:"dispatch",time:new Date().toISOString(),msg:"Pulled from dispatch run "+rn1+" while "+x.state+"."};
+    alertEng(id,"Pulled from dispatch, not repaired"); log(id,x.state,x.state,"RFID portal","Removed from run "+rn1+"; engineering notified");
     UI.swapOut=id; toast("ok","Engineering notified. Pick a replacement for "+id+"."); break;
   case "replace":
     var dd=S.dispatch,i=dd.run.indexOf(UI.swapOut); if(i>-1)dd.run[i]=el.dataset.id;
-    dd.result.blocked=dd.result.blocked.filter(function(b){return b!==UI.swapOut;}); 
-    log(el.dataset.id,"Available","Available","RFID","Added to run 14 in place of "+UI.swapOut);
+    log(el.dataset.id,"Available","Available","RFID","Added to run "+runNo()+" in place of "+UI.swapOut);
     UI.swapOut=null; dd.result=null; toast("info","Replacement added. Read the run again."); break;
-  case "dispatch": S.dispatch.done=true; S.dispatch.at=new Date().toISOString();
-    S.dispatch.run.forEach(function(id){var x=T(id);x.loc={at:"hospital",time:S.dispatch.at,by:"Dispatch portal, run 14"};
-      S.reads.unshift({time:S.dispatch.at,portal:"Dispatch portal",epc:x.rfid,id:id,state:x.state,result:"Dispatched to "+HOSPITAL+" (run 14)",kind:"ok"});
-      S.log.unshift({time:S.dispatch.at,asset:id,from:x.state,to:x.state,who:"RFID portal",where:"Dispatch dock, SPL Broadmeadows",read:"RFID, EPC "+x.rfid,note:"Dispatched to "+HOSPITAL+" on run 14"});}); log("Run 14","Clear","Dispatched","RFID portal",S.dispatch.run.join(", ")+" to "+HOSPITAL); toast("ok","Run 14 dispatched."); break;
-  case "new-run": S.dispatch={run:Object.keys(S.trolleys).sort().filter(function(k){return T(k).state!=="Retired"&&T(k).loc&&T(k).loc.at==="laundry";}).slice(0,4),result:null,done:false,at:null}; break;
+  case "dispatch":
+    /* the portal read may be out of date: check again before anything leaves */
+    if(!S.online){toast("warn","Offline. Dispatch is held until the connection is back.");break;}
+    if(S.dispatch.done||!S.dispatch.result) break;
+    var nowBad=S.dispatch.run.filter(function(id){return T(id).state!=="Available";});
+    if(nowBad.length){readRun();toast("fault","Dispatch blocked: "+nowBad.join(", ")+" changed since the run was read.");break;}
+    var rn2=runNo(); S.dispatch.done=true; S.dispatch.at=new Date().toISOString();
+    S.dispatch.run.forEach(function(id){var x=T(id);x.loc={at:"hospital",time:S.dispatch.at,by:"Dispatch portal, run "+rn2};
+      S.reads.unshift({time:S.dispatch.at,portal:"Dispatch portal",epc:x.rfid,id:id,state:x.state,result:"Dispatched to "+HOSPITAL+" (run "+rn2+")",kind:"ok"});
+      S.log.unshift({time:S.dispatch.at,asset:id,from:x.state,to:x.state,who:"RFID portal",where:"Dispatch dock, SPL Broadmeadows",read:"RFID, EPC "+x.rfid,note:"Dispatched to "+HOSPITAL+" on run "+rn2});}); log("Run "+rn2,"Clear","Dispatched","RFID portal",S.dispatch.run.join(", ")+" to "+HOSPITAL); toast("ok","Run "+rn2+" dispatched."); break;
+  case "new-run": S.dispatch={no:runNo()+1,run:Object.keys(S.trolleys).sort().filter(function(k){return T(k).state!=="Retired"&&T(k).loc&&T(k).loc.at==="laundry";}).slice(0,4),result:null,done:false,at:null}; UI.swapOut=null; break;
   case "tag": var tg=S.newTags[+el.dataset.i]; S.reg.barcode=tg.barcode; S.reg.qr=tg.qr; S.reg.rfid=tg.rfid; S.reg.i=+el.dataset.i; S.reg.err=null; break;
   case "register":
     var g=S.reg;
@@ -871,13 +933,15 @@ document.addEventListener("keydown",function(e){
   if(e.key==="Escape"&&UI.dialog){act("close");}
   if(UI.dialog==="pin"&&/^[0-9]$/.test(e.key)){act("key",{dataset:{k:e.key}});}
 });
-document.addEventListener("visibilitychange",function(){if(document.hidden&&UI.cam){stopCam();render();}});
+/* stop the camera when the app goes to the background - but not while it is starting:
+   on some phones the "Allow camera?" prompt itself hides the page */
+document.addEventListener("visibilitychange",function(){if(document.hidden&&UI.cam&&UI.cam.status==="live"){stopCam();refresh();}});
 setInterval(function(){var c=document.getElementById("clock");if(c)c.textContent=tm(Date.now());},1000);
 function theme(){var t=document.documentElement.dataset.theme;if(t)return t;return window.matchMedia&&matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";}
 function setTheme(t){document.documentElement.dataset.theme=t;try{localStorage.setItem("spl-trolley-theme",t);}catch(e){}}
 try{var savedTheme=localStorage.getItem("spl-trolley-theme");if(savedTheme)document.documentElement.dataset.theme=savedTheme;}catch(e){}
-if(window.matchMedia){try{matchMedia("(prefers-color-scheme: dark)").addEventListener("change",function(){render();});}catch(e){}}
+if(window.matchMedia){try{matchMedia("(prefers-color-scheme: dark)").addEventListener("change",refresh);}catch(e){}}
 if(window.innerWidth<=900)S.sidebar=false;
-if(NARROW){try{NARROW.addEventListener("change",function(){render();});}catch(e){NARROW.addListener(function(){render();});}}
+if(NARROW){try{NARROW.addEventListener("change",refresh);}catch(e){NARROW.addListener(refresh);}}
 render();
 })();

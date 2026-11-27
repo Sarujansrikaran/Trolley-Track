@@ -20,9 +20,28 @@ page (admin gets **More**); a camera viewfinder for scanning, with the result re
 scanner until you tap **Scan another**; bottom-sheet dialogs; and tables shown as cards.
 
 On a desktop, click the **phone icon** in the top bar to preview it in a phone frame
-(**Back to desktop** to leave). Over Live Server on the same Wi-Fi, open
-`http://<your-PC-IP>:5500` on a phone and use **Add to Home Screen** to run it like an app
-(`manifest.webmanifest`, `icon.svg`).
+(**Back to desktop** to leave).
+
+### Testing on a real phone (the camera needs https)
+
+Phone browsers only allow the camera on an **https** address (or `localhost`). Opening
+`http://<your-PC-IP>:5500` on a phone loads the app, but the scanner shows
+"The camera only works on a secure https link". Use one of these instead:
+
+- **VS Code port forwarding (quickest):** start Live Server, open the **Ports** panel
+  (View → Open View → Ports), **Forward a Port** → `5500`, sign in to GitHub when asked,
+  then right-click the port → **Port Visibility → Public**. Open the `https://….devtunnels.ms`
+  address on the phone.
+- **ngrok:** `ngrok http 5500`, then open the `https://` address it prints.
+- **GitHub Pages:** publish the repo and open its `https://<user>.github.io/…` address.
+
+On the phone, use **Add to Home Screen** to run it like an app (`manifest.webmanifest`,
+`icon.svg`, and `apple-touch-icon.png` for iPhone). Without https you can still try every
+screen by tapping the demo trolleys under the scanner.
+
+When you change the CSS or JS, bump `?v=` in `index.html` and `APP_VERSION` in `js/app.js`
+together. Phones cache hard, and the camera status line shows the version so you can tell
+which one is running.
 
 ## Project layout
 
