@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera Test</title>
+<!-- Step-by-step camera check for phones. No libraries, so it shows whether the phone and
+     link allow the camera at all, separate from the app's own scanner code. -->
+<style>
+  :root{--blue:#0092D6;--ok:#2E7D32;--bad:#C62828;--muted:#666;--line:#ddd}
+  *{box-sizing:border-box}
+  body{margin:0;padding:16px;font:16px/1.45 -apple-system,Roboto,Arial,sans-serif;color:#111;background:#fafafa}
+  h1{font-size:22px;font-weight:500;margin:0 0 4px}
+  p{margin:0 0 14px;color:var(--muted)}
+  button{font:inherit;font-weight:500;color:#fff;background:var(--blue);border:0;border-radius:10px;padding:14px 18px;width:100%;margin:6px 0 14px}
+  ol{list-style:none;padding:0;margin:0 0 14px;display:flex;flex-direction:column;gap:6px}
+  li{background:#fff;border:1px solid var(--line);border-radius:8px;padding:10px 12px;overflow-wrap:anywhere}
+  li b{display:inline-block;width:22px}
+  li.ok b{color:var(--ok)} li.bad b{color:var(--bad)} li.wait b{color:var(--muted)}
+  li small{display:block;color:var(--muted);margin-top:2px}
+  video{width:100%;max-height:50vh;background:#000;border-radius:10px;display:none}
+  pre{white-space:pre-wrap;font:12px/1.4 ui-monospace,Menlo,monospace;background:#fff;border:1px solid var(--line);border-radius:8px;padding:10px;color:#333}
+</style>
+</head>
+<body>
+<h1>Camera test</h1>
+<p>Tap the button, allow the camera, then screenshot this page and send it.</p>
+<button id="go" type="button">Start camera test</button>
+<ol id="steps"></ol>
+<video id="v" playsinline muted autoplay></video>
+<pre id="info"></pre>
+<script>
+var steps=document.getElementById("steps"), info=document.getElementById("info"), v=document.getElementById("v");
+function add(state,text,detail){var li=document.createElement("li");li.className=state;li.innerHTML="<b>"+(state==="ok"?"✓":state==="bad"?"✗":"…")+"</b>"+text+(detail?"<small>"+detail.replace(/</g,"&lt;")+"</small>":"");steps.appendChild(li);return li;}
+info.textContent=["Address: "+location.href,"Browser: "+navigator.userAgent,"Standalone (home screen): "+(navigator.standalone===true||matchMedia("(display-mode: standalone)").matches)].join("\n");
+
+document.getElementById("go").onclick=function(){
+  steps.innerHTML="";
+  var secure=window.isSecureContext;
+  add(secure?"ok":"bad","Secure link (https)",secure?location.protocol+"//"+location.host:"This is "+location.protocol+" — the camera is blocked. Open the https:// tunnel address instead.");
+  var md=!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia);
+  add(md?"ok":"bad","Browser offers the camera API",md?"":"Not available. Usually: not https, or opened inside another app (Teams, Outlook, Instagram…). Open the link in Safari.");
+  if(!secure||!md) return;
+  var w=add("wait","Asking for the camera…","If nothing pops up, the camera was blocked earlier: Safari aA menu → Website Settings → Camera → Allow.");
+  navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:"environment"}}}).then(function(stream){
+    w.remove();
+    var tr=stream.getVideoTracks()[0], s=tr&&tr.getSettings?tr.getSettings():{};
+    add("ok","Camera allowed",(tr?tr.label:"")+(s.width?" · "+s.width+"×"+s.height:"")+(s.facingMode?" · "+s.facingMode:""));
+    v.style.display="block"; v.srcObject=stream;
+    var p=v.play();
+    (p&&p.then?p:Promise.resolve()).then(function(){
+      setTimeout(function(){add(v.videoWidth?"ok":"bad","Video playing",v.videoWidth?v.videoWidth+"×"+v.videoHeight:"No picture. Tap the video once.");},800);
+    },function(e){
+      var li=add("bad","Video didn't start by itself",e.name+": "+e.message+" — tap the video to start it (Low Power Mode does this).");
+      v.onclick=function(){v.play().then(function(){li.className="ok";li.querySelector("b").textContent="✓";});};
+    });
+    add("ok","Barcode reader the app will use","BarcodeDetector" in window?"Built-in scanner":"ZXing (downloaded from cdn.jsdelivr.net, needs internet on the phone)");
+  }).catch(function(e){
+    w.remove();
+    var why={NotAllowedError:"Blocked. Safari: aA → Website Settings → Camera → Allow. Also Settings → Safari → Camera → Ask/Allow. Also Settings → Screen Time → Content & Privacy → Allowed Apps → Camera on.",
+      NotFoundError:"No camera found.",NotReadableError:"Camera is busy in another app (FaceTime, Camera, Zoom…). Close it and try again.",
+      OverconstrainedError:"Camera rejected the settings.",SecurityError:"Blocked by the page's security settings."}[e.name]||"";
+    add("bad","Camera refused: "+e.name,(e.message||"")+(why?" — "+why:""));
+  });
+};
+</script>
+</body>
+</html>

@@ -175,6 +175,7 @@ function morph(a,b){
      Read b's value first: morphChildren may move b's children (e.g. textarea text) into a. */
   var tag=a.tagName, box=tag==="INPUT"&&(a.type==="checkbox"||a.type==="radio"), form=tag==="INPUT"||tag==="TEXTAREA"||tag==="SELECT";
   var want=form?(box?b.checked:b.value):null;
+  if(a.hasAttribute("data-keep")) return;   /* contents managed by code (e.g. the camera video): leave them alone */
   morphChildren(a,b);
   if(form){if(box){if(a.checked!==want)a.checked=want;}else if(a.value!==want)a.value=want;}
 }
@@ -348,15 +349,30 @@ function tile(label,n,kind,sub){return '<div class="stat '+(kind==="info"?"":kin
    the browser's own BarcodeDetector where it exists (Android Chrome), otherwise the
    ZXing library, loaded on first use (iPhone, desktop). A recognised label goes
    through the same Bundle Nexus lookup as tapping a trolley in the demo list. */
-var APP_VERSION=9;  /* shown in the camera status line; keep in step with ?v= in index.html */
+var APP_VERSION=10; /* shown in the camera status line; keep in step with ?v= in index.html */
 var ZXING_URL="https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js";
-var CAM={stream:null,timer:null,busy:false,last:null,info:null,lastTry:0};
+var CAM={stream:null,timer:null,busy:false,last:null,info:null,lastTry:0,video:null};
+var CAM_START_MS=15000;   /* give up on "Starting the camera…" after this long */
 var ZXING_EVERY_MS=350, ZXING_MAX_PX=640;   /* ZXing runs on the main thread: check less often, on a smaller frame */
 function loadScript(src){return new Promise(function(ok,bad){var el=document.createElement("script");el.src=src;el.onload=ok;el.onerror=function(){bad(new Error("Couldn’t load the barcode reader. Check the internet connection."));};document.head.appendChild(el);});}
 function stopCam(){
   if(CAM.timer){clearInterval(CAM.timer);CAM.timer=null;}
   if(CAM.stream){CAM.stream.getTracks().forEach(function(t){t.stop();});CAM.stream=null;}
+  if(CAM.video){CAM.video.srcObject=null;CAM.video=null;}
   CAM.busy=false;CAM.last=null;CAM.info=null;UI.cam=null;
+}
+/* iPhone Safari is strict about camera video. Build the <video> in the live page with
+   createElement (not from a template), set muted + playsinline before attaching the stream,
+   and keep it out of patch() (its box has data-keep). Same steps as cam-test.html. */
+function attachVideo(stream){
+  var box=document.getElementById("vfCam"); if(!box) return null;
+  var v=document.createElement("video"); v.className="vf-video";
+  v.setAttribute("playsinline",""); v.setAttribute("webkit-playsinline",""); v.setAttribute("muted",""); v.setAttribute("autoplay","");
+  v.muted=true; v.defaultMuted=true; v.playsInline=true; v.autoplay=true;
+  while(box.firstChild) box.removeChild(box.firstChild);
+  box.appendChild(v);
+  v.srcObject=stream; CAM.video=v;
+  return v;
 }
 /* the phone's built-in scanner, only if it really works: some Android phones list
    BarcodeDetector but fail every call (scanner module not installed) */
@@ -444,10 +460,17 @@ function startCam(){
   if(!window.isSecureContext){UI.cam={page:pg,status:"error",msg:"The camera only works on a secure https link (or localhost). Open the app from its https address, or tap a demo trolley below."};return render();}
   if(!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)){UI.cam={page:pg,status:"error",msg:"This browser can’t use the camera."};return render();}
   UI.cam={page:pg,status:"starting"}; render();
+  /* never sit on "Starting the camera…" forever (e.g. the permission prompt was dismissed) */
+  var watchdog=setTimeout(function(){
+    if(UI.cam&&UI.cam.page===pg&&UI.cam.status==="starting"){stopCam();UI.cam={page:pg,status:"error",msg:"The camera didn’t start. Check the camera is allowed for this site (Safari: aA → Website Settings → Camera → Allow), then tap Try again."};refresh();}
+  },CAM_START_MS);
   openCamera().then(function(stream){
-    if(!UI.cam||UI.cam.page!==S.page){stream.getTracks().forEach(function(t){t.stop();});return;}   /* left the screen meanwhile */
+    clearTimeout(watchdog);
+    /* left the screen, stopped, or timed out meanwhile */
+    if(!UI.cam||UI.cam.page!==S.page||UI.cam.status!=="starting"){stream.getTracks().forEach(function(t){t.stop();});return;}
     CAM.stream=stream; CAM.info={name:"",frames:0,errs:0,lastErr:"",note:""}; UI.cam.status="live"; refresh();
-    var v=document.getElementById("vfVideo"); v.srcObject=stream;
+    var v=attachVideo(stream);
+    if(!v){stopCam();UI.cam={page:pg,status:"error",msg:"Couldn’t show the camera picture. Tap Try again."};refresh();return;}
     playVideo(v);
     camInfo(v);
     /* the loop starts now so the status line updates while the reader is still loading */
@@ -466,7 +489,7 @@ function startCam(){
         });
     },200);
     return makeDecoder().then(function(d){ if(CAM.stream&&CAM.info){dec=d; CAM.info.name=d.name;} });
-  }).catch(function(e){stopCam(); UI.cam={page:pg,status:"error",msg:camError(e)}; refresh();});
+  }).catch(function(e){clearTimeout(watchdog); stopCam(); UI.cam={page:pg,status:"error",msg:camError(e)}; refresh();});
 }
 /* a code was read: QR key, barcode or asset number */
 function onCode(txt){
@@ -493,13 +516,13 @@ function viewfinder(){
   var cam=UI.cam&&UI.cam.page===S.page?UI.cam:null;
   var corners='<i></i><i></i><i></i><i></i><div class="vf-line"></div>';
   if(cam&&cam.status!=="error")
-    return '<div class="viewfinder live" data-key="vf-live"><video id="vfVideo" class="vf-video" playsinline muted autoplay></video>'+
+    return '<div class="viewfinder live" data-key="vf-live"><div class="vf-cam" id="vfCam" data-keep></div>'+
       '<div class="vf-frame" aria-hidden="true">'+corners+'</div>'+
       '<div class="vf-text">'+(cam.status==="starting"?"Starting the camera…":"Point at the QR code or barcode")+'<div class="vf-info" id="vfInfo"></div></div>'+
       (cam.needTap?'<button class="btn btn-primary vf-tap" data-act="cam-play">'+ic("camera")+'Tap to start the camera</button>':'')+
       '<button class="vf-stop" data-act="cam-stop" aria-label="Stop the camera">'+ic("x")+'</button></div>';
   return '<div class="viewfinder" data-key="vf-idle"><div class="vf-frame" aria-hidden="true">'+corners+ic("qr",1.4)+'</div>'+
-    '<div class="vf-text">'+(cam?esc(cam.msg):"Scan the trolley’s QR code or barcode")+'</div>'+
+    '<div class="vf-text">'+(cam?esc(cam.msg):"Scan the trolley’s QR code or barcode")+'<div class="vf-info">App v'+APP_VERSION+'</div></div>'+
     '<button class="btn btn-primary vf-btn" data-act="cam-start">'+ic("camera")+(cam?"Try again":"Scan with camera")+'</button></div>';
 }
 
@@ -827,7 +850,7 @@ function act(a,el){
   case "close": UI.dialog=null; UI.form={}; UI.pinNext=null; break;
   case "cam-start": startCam(); return;
   case "cam-stop": stopCam(); break;
-  case "cam-play": var cv2=document.getElementById("vfVideo"); if(cv2) playVideo(cv2); return;
+  case "cam-play": if(CAM.video) playVideo(CAM.video); return;
   case "portal-in":
     var wasBad=portalRead(el.dataset.id,"inbound");
     toast(wasBad?"warn":"ok",el.dataset.id+" read at the inbound portal."+(wasBad?" It’s faulty, so engineering has been alerted.":""));
